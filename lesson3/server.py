@@ -4,30 +4,26 @@ import json
 import argparse
 import ipaddress
 
-from global_vars import *
-from logs.server_log_config import server_logger, stream_logger, log
+import os
+import sys
+basedir = os.path.dirname(os.path.dirname(__file__))
+sys.path.append(basedir)
+
+from lesson3.global_vars import *
+from lesson5.server_log_config import server_logger, stream_logger
 
 
-@log
 def get_message(client):
     """
     Получает сообщение от клиента
     :param client:
     :return: строку сообщения
     """
-    try:
-        msg = client.recv(BUFFERSIZE).decode(ENCODING)
-    except UnicodeDecodeError:
-        server_logger.error(f'Ошибка декодирования сообщения {msg}')
-        msg = {
-            'action': 'msg',
-            'response': BAD_REQUEST,
-            'error': 'UnicodeDecodeError'
-        }
+    msg = client.recv(BUFFERSIZE).decode(ENCODING)
+    server_logger.debug(f'Сообщение от клиента {msg}')
     return json.loads(msg)
 
 
-@log
 def preparing_response(response_code: int, action: str = 'presence'):
     """Готовит ответ клиенту"""
     data = {
@@ -39,7 +35,6 @@ def preparing_response(response_code: int, action: str = 'presence'):
     return json.dumps(data).encode(ENCODING)
 
 
-@log
 def send_message(client, message: bytes):
     try:
         client.send(message)
@@ -48,7 +43,6 @@ def send_message(client, message: bytes):
         server_logger.error(f'Ошибка при отправке сообщения: {ex}')
 
 
-@log
 def get_socket(address: str, port: int, listen: int = 5):
     s = socket(AF_INET, SOCK_STREAM)
     s.bind((address, port))
@@ -57,7 +51,6 @@ def get_socket(address: str, port: int, listen: int = 5):
     return s
 
 
-@log
 def start(address: str, port: int):
     s = get_socket(address, port)
 
