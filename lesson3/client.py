@@ -4,11 +4,15 @@ import json
 import argparse
 import ipaddress
 
-from global_vars import *
-from logs.client_log_config import client_logger, log
+import os
+import sys
+basedir = os.path.dirname(os.path.dirname(__file__))
+sys.path.append(basedir)
+
+from lesson3.global_vars import *
+from lesson5.client_log_config import client_logger
 
 
-@log
 def presence_msg(username=None, password=None, status='online'):
     msg = {
         'action': 'presence',
@@ -23,7 +27,6 @@ def presence_msg(username=None, password=None, status='online'):
     return json.dumps(msg).encode(ENCODING)
 
 
-@log
 def preparing_message(msg: str, action: str = 'msg', ):
     """Готовит сообщение серверу"""
     data = {
@@ -31,16 +34,10 @@ def preparing_message(msg: str, action: str = 'msg', ):
         'time': time.time(),
         'message': msg,
     }
-    try:
-        ready_msg = json.dumps(data).encode(ENCODING)
-    except UnicodeEncodeError:
-        client_logger.error(f'Ошибка в кодировании сообщения {data}')
-        return
-
-    return ready_msg
+    client_logger.debug(f'Подготовлено сообщение {data}')
+    return json.dumps(data).encode(ENCODING)
 
 
-@log
 def send_message(s: socket, msg: bytes):
     try:
         s.send(msg)
@@ -49,14 +46,12 @@ def send_message(s: socket, msg: bytes):
         client_logger.error(f'Ошибка при отправке сообщения {ex}')
 
 
-@log
 def get_response(s: socket, max_length=BUFFERSIZE):
     msg = s.recv(max_length).decode(ENCODING)
     client_logger.debug(f'Получено сообщение от сервера {msg}')
     return msg
 
 
-@log
 def parse_response(msg: str):
     try:
         obj = json.loads(msg)
@@ -67,7 +62,6 @@ def parse_response(msg: str):
     return obj
 
 
-@log
 def start(address, port):
     client_logger.debug(f'Запущен клиент с параметрами: ip = {address}, port = {port}')
     while True:
@@ -76,10 +70,8 @@ def start(address, port):
         pm = presence_msg()
         send_message(s, pm)
         client_logger.debug(f'Отправлено "presence" сообщение!')
-        msg = preparing_message(input('>>> '))
-        if not msg:
-            continue
-        send_message(s, msg)
+        msg = input('>>> ')
+        send_message(s, preparing_message(msg))
         client_logger.debug(f'Отправлено сообщение {msg}')
 
         resp = parse_response(get_response(s))
