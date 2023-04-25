@@ -1,53 +1,71 @@
 import sys
-import json
-import socket
+from socket import *
 import time
-from variables import *
-from utils import *
+import json
+import argparse
+import ipaddress
+
+from global_vars import *
+from logs.client_log_config import client_logger, log
 
 
-def create_presence(account_name='Guest'):
-    out = {
-        ACTION: PRESENCE,
-        TIME: time.time(),
-        USER: {
-            ACCOUNT_NAME: account_name
-        }
-    }
-    return out
+def send_message(sock: socket, message: str):
+    if message == 'exit':
+        sock.close()
+        sys.exit(0)
 
-
-def process_ans(message):
-    if RESPONSE in message:
-        if message[RESPONSE] == 200:
-            return '200 : OK'
-        return f'400 : {message[ERROR]}'
-    raise ValueError
-
-
-def main():
+    prepare_message = None
     try:
-        server_address = sys.argv[1]
-        server_port = int(sys.argv[2])
-        if server_port < 1024 or server_port > 65535:
-            raise ValueError
-    except IndexError:
-        server_address = DEFAULT_IP_ADDRESS
-        server_port = DEFAULT_PORT
-    except ValueError:
-        print('В качестве порта может быть указано только число в диапазоне от 1024 до 65535.')
-        sys.exit(1)
+        prepare_message = message.encode(ENCODING)
+    except UnicodeEncodeError:
+        client_logger.error(f'Не удалось закодировать сообщение - "{message}"')
 
-    transport = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    transport.connect((server_address, server_port))
-    message_to_server = create_presence()
-    send_message(transport, message_to_server)
+    if prepare_message:
+        try:
+            sock.send(prepare_message)
+        except:
+            client_logger.error(f'Не удалось отправить сообщение {message} клиенту {sock.getpeername()}')
+
+
+def get_message(s: socket):
+    msg_bytes = None
     try:
-        answer = process_ans(get_message(transport))
-        print(answer)
-    except (ValueError, json.JSONDecodeError):
-        print('Не удалось декодировать сообщение сервера.')
+        msg_bytes = s.recv(BUFFERSIZE)
+    except:
+        client_logger.error(f'Нет связи с сервером! {s.getpeername()}')
+
+    if msg_bytes:
+        try:
+            message = msg_bytes.decode(ENCODING)
+        except UnicodeDecodeError as e:
+            client_logger.error(f'{e}')
+        else:
+            return message
+
+
+@log
+def start(address, port, mode):
+    s = socket(AF_INET, SOCK_STREAM)
+    s.connect((address, port))
+    while True:
+        if mode == 'send':
+            send_message(s, input('>>> '))
+        elif mode == 'listen':
+            message = get_message(s)
+            if message:
+                print(message)
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('address', type=str, help='IP-адрес сервера')
+    parser.add_argument('mode', type=str, help='Тип клиента (send - отправитель, listen - получатель)')
+    parser.add_argument('-p', dest='port', type=int, default=7777, help='TCP-порт на сервере (по умолчанию 7777)')
+    args = parser.parse_args()
+
+    try:
+        ipaddress.ip_address(args.address)
+    except ValueError:
+        parser.error('Введен не корректный ip адрес')
+
+    start(args.address, args.port, args.mode)

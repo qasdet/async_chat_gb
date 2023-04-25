@@ -1,69 +1,89 @@
-import socket
-import sys
+import select
+from socket import socket, AF_INET, SOCK_STREAM
+import time
 import json
-from variables import MAX_CONNECTIONS, DEFAULT_PORT, RESPONSE, TIME, PRESENCE, USER, ACCOUNT_NAME, ACTION, ERROR, CLOSE
-from utils import send_message, get_message
+import argparse
+import ipaddress
+
+from global_vars import *
+from logs.server_log_config import server_logger, stream_logger, log
 
 
-def process_client_message(message):
+def read_requests(r_clients: list, all_clients: list):
+    """
+    Читает запросы из списка клиентов.
+    Возвращает словарь вида {сокет: запрос}
+    """
 
-    if ACTION in message and message[ACTION] == PRESENCE and TIME in message \
-            and USER in message and message[USER][ACCOUNT_NAME] == 'Guest':
-        return {RESPONSE: 200}
-    if ACTION in message and message[ACTION] == CLOSE and TIME in message \
-            and USER in message and message[USER][ACCOUNT_NAME] == 'Guest':
-        return False
-    return {RESPONSE: 400, ERROR: 'Bad Request'}
+    responses = {}
+    for sock in r_clients:
+        try:
+            data = sock.recv(BUFFERSIZE).decode(ENCODING)
+            responses[sock] = data
+        except:
+            stream_logger.info(f'Клиент {sock} отключился')
+            all_clients.remove(sock)
 
-def main():
-    try:
-        if '-p' in sys.argv:
-            listen_port = int(sys.argv[sys.argv.index('-p') + 1])
-        else:
-            listen_port = DEFAULT_PORT
-        if listen_port < 1024 or listen_port > 65535:
-            raise ValueError
-    except IndexError:
-        print('После параметра -\'p\' необходимо указать номер порта.')
-        sys.exit(1)
-    except ValueError:
-        print('В качестве порта может быть указано целое число в диапазоне от 1024 до 65535.')
-        sys.exit(1)
+    return responses
 
-    try:
-        if '-a' in sys.argv:
-            listen_address = sys.argv[sys.argv.index('-a') + 1]
-        else:
-            listen_address = ''
 
-    except IndexError:
-        print(
-            'После параметра \'a\'- необходимо указать адрес, который будет слушать сервер.')
-        sys.exit(1)
+def write_responses(requests, w_clients, all_clients):
+    for sock in w_clients:
+        try:
+            # Отправляем на каждый доступный сокет все сообщения из requests
+            for resp in requests.values():
+                sock.send(resp.encode(ENCODING))
+        except:
+            stream_logger.info(f'Клиент {sock.fileno()} {sock.getpeername()} отключился')
+            sock.close()
+            all_clients.remove(sock)
 
-    transport = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    transport.bind((listen_address, listen_port))
 
-    transport.listen(MAX_CONNECTIONS)
+
+@log
+def start(address: str, port: int):
+    clients = []
+
+    s = socket(AF_INET, SOCK_STREAM)
+    s.bind((address, port))
+    s.listen(5)
+    s.settimeout(0.2)
 
     while True:
-        client, client_address = transport.accept()
         try:
-            message_from_cient = get_message(client)
-            print(message_from_cient)
-            if not message_from_cient:
-                sys.exit()
+            clt, addr = s.accept()
+        except OSError:
+            pass
+        else:
+            stream_logger.info(f'Получен запрос на соединение от {addr}')
+            clients.append(clt)
+        finally:
+            wait = 0
+            rlist = []
+            wlist = []
+            try:
+                rlist, wlist, erlist = select.select(clients, clients, [], wait)
+            except:
+                pass
 
-            response = process_client_message(message_from_cient)
-            if not response:
-                sys.exit()
-            send_message(client, response)
-            client.close()
-        except (ValueError, json.JSONDecodeError):
-            print('Принято некорретное сообщение от клиента.')
-            client.close()
-
+            requests = read_requests(rlist, clients)
+            if requests:
+                write_responses(requests, wlist, clients)
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-p', '--port', dest='port', type=int, default=7777,
+                        help='TCP-порт для работы (по умолчанию использует 7777)')
+    parser.add_argument('-a', dest='address',
+                        help='IP-адрес для прослушивания (по умолчанию слушает все доступные адреса)')
+    args = parser.parse_args()
+
+    address = args.address or ''
+    if address:
+        try:
+            ipaddress.ip_address(address)
+        except ValueError:
+            parser.error(f'Введен не корректный ip адрес "{address}"')
+
+    start(address, args.port)
