@@ -1,68 +1,102 @@
-import socket
 import sys
-import json
-from variables import MAX_CONNECTIONS, DEFAULT_PORT, RESPONSE, TIME, PRESENCE, USER, ACCOUNT_NAME, ACTION, ERROR, CLOSE
-from utils import send_message, get_message
+import os
+import argparse
+import logging
+import configparser
+import logs.config_server_log
+from common.utils import *
+from common.decos import log
+from server.core import MessageProcessor
+from server.database import ServerStorage
+from server.main_window import MainWindow
+from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
+
+# Инициализация логирования сервера.
+logger = logging.getLogger('server')
 
 
-def process_client_message(message):
+@log
+def arg_parser(default_port, default_address):
+    '''Парсер аргументов коммандной строки.'''
+    logger.debug(
+        f'Инициализация парсера аргументов коммандной строки: {sys.argv}')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-p', default=default_port, type=int, nargs='?')
+    parser.add_argument('-a', default=default_address, nargs='?')
+    parser.add_argument('--no_gui', action='store_true')
+    namespace = parser.parse_args(sys.argv[1:])
+    listen_address = namespace.a
+    listen_port = namespace.p
+    gui_flag = namespace.no_gui
+    logger.debug('Аргументы успешно загружены.')
+    return listen_address, listen_port, gui_flag
 
-    if ACTION in message and message[ACTION] == PRESENCE and TIME in message \
-            and USER in message and message[USER][ACCOUNT_NAME] == 'Guest':
-        return {RESPONSE: 200}
-    if ACTION in message and message[ACTION] == CLOSE and TIME in message \
-            and USER in message and message[USER][ACCOUNT_NAME] == 'Guest':
-        return False
-    return {RESPONSE: 400, ERROR: 'Bad Request'}
 
+@log
+def config_load():
+    '''Парсер конфигурационного ini файла.'''
+    config = configparser.ConfigParser()
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    config.read(f"{dir_path}/{'server.ini'}")
+    # Если конфиг файл загружен правильно, запускаемся, иначе конфиг по
+    # умолчанию.
+    if 'SETTINGS' in config:
+        return config
+    else:
+        config.add_section('SETTINGS')
+        config.set('SETTINGS', 'Default_port', str(DEFAULT_PORT))
+        config.set('SETTINGS', 'Listen_Address', '')
+        config.set('SETTINGS', 'Database_path', '')
+        config.set('SETTINGS', 'Database_file', 'server_database.db3')
+        return config
+
+
+@log
 def main():
-    try:
-        if '-p' in sys.argv:
-            listen_port = int(sys.argv[sys.argv.index('-p') + 1])
-        else:
-            listen_port = DEFAULT_PORT
-        if listen_port < 1024 or listen_port > 65535:
-            raise ValueError
-    except IndexError:
-        print('После параметра -\'p\' необходимо указать номер порта.')
-        sys.exit(1)
-    except ValueError:
-        print('В качестве порта может быть указано целое число в диапазоне от 1024 до 65535.')
-        sys.exit(1)
+    '''Основная функция'''
+    # Загрузка файла конфигурации сервера
+    config = config_load()
 
-    try:
-        if '-a' in sys.argv:
-            listen_address = sys.argv[sys.argv.index('-a') + 1]
-        else:
-            listen_address = ''
+    # Загрузка параметров командной строки, если нет параметров, то задаём
+    # значения по умоланию.
+    listen_address, listen_port, gui_flag = arg_parser(
+        config['SETTINGS']['Default_port'], config['SETTINGS']['Listen_Address'])
 
-    except IndexError:
-        print(
-            'После параметра \'a\'- необходимо указать адрес, который будет слушать сервер.')
-        sys.exit(1)
+    # Инициализация базы данных
+    database = ServerStorage(
+        os.path.join(
+            config['SETTINGS']['Database_path'],
+            config['SETTINGS']['Database_file']))
 
-    transport = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    transport.bind((listen_address, listen_port))
+    # Создание экземпляра класса - сервера и его запуск:
+    server = MessageProcessor(listen_address, listen_port, database)
+    server.daemon = True
+    server.start()
 
-    transport.listen(MAX_CONNECTIONS)
+    # Если  указан параметр без GUI то запускаем простенький обработчик
+    # консольного ввода
+    if gui_flag:
+        while True:
+            command = input('Введите exit для завершения работы сервера.')
+            if command == 'exit':
+                # Если выход, то завршаем основной цикл сервера.
+                server.running = False
+                server.join()
+                break
 
-    while True:
-        client, client_address = transport.accept()
-        try:
-            message_from_cient = get_message(client)
-            print(message_from_cient)
-            if not message_from_cient:
-                sys.exit()
+    # Если не указан запуск без GUI, то запускаем GUI:
+    else:
+        # Создаём графическое окуружение для сервера:
+        server_app = QApplication(sys.argv)
+        server_app.setAttribute(Qt.AA_DisableWindowContextHelpButton)
+        main_window = MainWindow(database, server, config)
 
-            response = process_client_message(message_from_cient)
-            if not response:
-                sys.exit()
-            send_message(client, response)
-            client.close()
-        except (ValueError, json.JSONDecodeError):
-            print('Принято некорретное сообщение от клиента.')
-            client.close()
+        # Запускаем GUI
+        server_app.exec_()
 
+        # По закрытию окон останавливаем обработчик сообщений
+        server.running = False
 
 
 if __name__ == '__main__':
